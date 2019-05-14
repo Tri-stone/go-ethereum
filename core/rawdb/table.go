@@ -67,6 +67,13 @@ func (t *table) NewIterator() ethdb.Iterator {
 	return t.NewIteratorWithPrefix(nil)
 }
 
+// NewIteratorWithStart creates a binary-alphabetical iterator over a subset of
+// database content starting at a particular initial key (or after, if it does
+// not exist).
+func (t *table) NewIteratorWithStart(start []byte) ethdb.Iterator {
+	return t.db.NewIteratorWithStart(start)
+}
+
 // NewIteratorWithPrefix creates a binary-alphabetical iterator over a subset
 // of database content with a particular key prefix.
 func (t *table) NewIteratorWithPrefix(prefix []byte) ethdb.Iterator {
@@ -147,4 +154,9 @@ func (b *tableBatch) Write() error {
 // Reset resets the batch for reuse.
 func (b *tableBatch) Reset() {
 	b.batch.Reset()
+}
+
+// Replay replays the batch contents.
+func (b *tableBatch) Replay(w ethdb.Writer) error {
+	return b.batch.Replay(w)
 }

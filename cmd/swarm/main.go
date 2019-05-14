@@ -102,7 +102,7 @@ func init() {
 	utils.ListenPortFlag.Value = 30399
 }
 
-var app = utils.NewApp("", "Ethereum Swarm")
+var app = utils.NewApp("", "", "Ethereum Swarm")
 
 // This init function creates the cli.App.
 func init() {
@@ -298,7 +298,10 @@ func bzzd(ctx *cli.Context) error {
 
 	//a few steps need to be done after the config phase is completed,
 	//due to overriding behavior
-	initSwarmNode(bzzconfig, stack, ctx)
+	err = initSwarmNode(bzzconfig, stack, ctx, &cfg)
+	if err != nil {
+		return err
+	}
 	//register BZZ as node.Service in the ethereum node
 	registerBzzService(bzzconfig, stack)
 	//start the node

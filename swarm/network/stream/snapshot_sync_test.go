@@ -31,6 +31,7 @@ import (
 	"github.com/ethereum/go-ethereum/p2p/enode"
 	"github.com/ethereum/go-ethereum/p2p/simulations"
 	"github.com/ethereum/go-ethereum/p2p/simulations/adapters"
+	"github.com/ethereum/go-ethereum/swarm/chunk"
 	"github.com/ethereum/go-ethereum/swarm/network"
 	"github.com/ethereum/go-ethereum/swarm/network/simulation"
 	"github.com/ethereum/go-ethereum/swarm/pot"
@@ -117,7 +118,6 @@ var simServiceMap = map[string]simulation.ServiceFunc{
 		store := state.NewInmemoryStore()
 
 		r := NewRegistry(addr.ID(), delivery, netStore, store, &RegistryOptions{
-			Retrieval:       RetrievalDisabled,
 			Syncing:         SyncingAutoSubscribe,
 			SyncUpdateDelay: 3 * time.Second,
 		}, nil)
@@ -147,20 +147,16 @@ func testSyncingViaGlobalSync(t *testing.T, chunkCount int, nodeCount int) {
 	//array where the generated chunk hashes will be stored
 	conf.hashes = make([]storage.Address, 0)
 
-	err := sim.UploadSnapshot(fmt.Sprintf("testing/snapshot_%d.json", nodeCount))
+	ctx, cancelSimRun := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancelSimRun()
+
+	filename := fmt.Sprintf("testing/snapshot_%d.json", nodeCount)
+	err := sim.UploadSnapshot(ctx, filename)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	ctx, cancelSimRun := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancelSimRun()
-
-	if _, err := sim.WaitTillHealthy(ctx); err != nil {
-		t.Fatal(err)
-	}
-
 	result := runSim(conf, ctx, sim, chunkCount)
-
 	if result.Error != nil {
 		t.Fatal(result.Error)
 	}
@@ -194,10 +190,10 @@ func runSim(conf *synctestConfig, ctx context.Context, sim *simulation.Simulatio
 		node := sim.Net.GetRandomUpNode()
 		item, ok := sim.NodeItem(node.ID(), bucketKeyStore)
 		if !ok {
-			return fmt.Errorf("No localstore")
+			return errors.New("no store in simulation bucket")
 		}
-		lstore := item.(*storage.LocalStore)
-		hashes, err := uploadFileToSingleNodeStore(node.ID(), chunkCount, lstore)
+		store := item.(chunk.Store)
+		hashes, err := uploadFileToSingleNodeStore(node.ID(), chunkCount, store)
 		if err != nil {
 			return err
 		}
@@ -225,25 +221,25 @@ func runSim(conf *synctestConfig, ctx context.Context, sim *simulation.Simulatio
 				localChunks := conf.idToChunksMap[id]
 				for _, ch := range localChunks {
 					//get the real chunk by the index in the index array
-					chunk := conf.hashes[ch]
-					log.Trace(fmt.Sprintf("node has chunk: %s:", chunk))
+					ch := conf.hashes[ch]
+					log.Trace("node has chunk", "address", ch)
 					//check if the expected chunk is indeed in the localstore
 					var err error
 					if *useMockStore {
 						//use the globalStore if the mockStore should be used; in that case,
 						//the complete localStore stack is bypassed for getting the chunk
-						_, err = globalStore.Get(common.BytesToAddress(id.Bytes()), chunk)
+						_, err = globalStore.Get(common.BytesToAddress(id.Bytes()), ch)
 					} else {
 						//use the actual localstore
 						item, ok := sim.NodeItem(id, bucketKeyStore)
 						if !ok {
-							return fmt.Errorf("Error accessing localstore")
+							return errors.New("no store in simulation bucket")
 						}
-						lstore := item.(*storage.LocalStore)
-						_, err = lstore.Get(ctx, chunk)
+						store := item.(chunk.Store)
+						_, err = store.Get(ctx, chunk.ModeGetLookup, ch)
 					}
 					if err != nil {
-						log.Debug(fmt.Sprintf("Chunk %s NOT found for id %s", chunk, id))
+						log.Debug("chunk not found", "address", ch.Hex(), "node", id)
 						// Do not get crazy with logging the warn message
 						time.Sleep(500 * time.Millisecond)
 						continue REPEAT
@@ -251,10 +247,10 @@ func runSim(conf *synctestConfig, ctx context.Context, sim *simulation.Simulatio
 					evt := &simulations.Event{
 						Type: EventTypeChunkArrived,
 						Node: sim.Net.GetNode(id),
-						Data: chunk.String(),
+						Data: ch.String(),
 					}
 					sim.Net.Events().Send(evt)
-					log.Debug(fmt.Sprintf("Chunk %s IS FOUND for id %s", chunk, id))
+					log.Trace("chunk found", "address", ch.Hex(), "node", id)
 				}
 			}
 			return nil
@@ -300,9 +296,9 @@ func mapKeysToNodes(conf *synctestConfig) {
 }
 
 //upload a file(chunks) to a single local node store
-func uploadFileToSingleNodeStore(id enode.ID, chunkCount int, lstore *storage.LocalStore) ([]storage.Address, error) {
+func uploadFileToSingleNodeStore(id enode.ID, chunkCount int, store chunk.Store) ([]storage.Address, error) {
 	log.Debug(fmt.Sprintf("Uploading to node id: %s", id))
-	fileStore := storage.NewFileStore(lstore, storage.NewFileStoreParams())
+	fileStore := storage.NewFileStore(store, storage.NewFileStoreParams(), chunk.NewTags())
 	size := chunkSize
 	var rootAddrs []storage.Address
 	for i := 0; i < chunkCount; i++ {
